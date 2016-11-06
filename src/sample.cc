@@ -27,13 +27,35 @@ struct A {
     }
 };
 
+struct B {
+    int calc(int count)
+    {
+        int sum = 0;
+        for (int i = 0; i < count; i++)
+            sum += 1;
+
+        return sum;
+    }
+};
+
 int main(int argc, char ** argv)
 {
-    double r = 0.0;
-    for (int i = 0; i < 5; i++)
-        r = A::calc(1000 * 1000);
+    {
+        double r = 0.0;
+        for (int i = 0; i < 5; i++)
+            r += A::calc(1000 * 1000);
 
-    std::printf("result = %f\n", r);
+        std::printf("A result = %f\n", r);
+    }
+
+    {
+        B b;
+        int r = 0;
+        for (int i = 0; i < 5; i++)
+            r += b.calc(1000 * 1000);
+
+        std::printf("B result = %d\n", r);
+    }
 
     return 0;
 }
