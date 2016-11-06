@@ -210,7 +210,7 @@ extern "C" void __cyg_profile_func_exit(void *, void *)
 
 static void usage(const char *path)
 {
-    std::printf("Usage: %s -f FUNCTION [OPTION]... COMMAND [ARGS]...\n", path);
+    std::printf("Usage: %s -f FUNCTION -e EVENT[,EVENT]... COMMAND [ARGS]...\n", path);
     std::exit(1);
 }
 
