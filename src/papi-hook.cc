@@ -20,8 +20,9 @@
     do { \
         int ret__ = call; \
         if (ret__ != PAPI_OK) { \
-            std::fprintf(stderr, "PAPI error: %s (%s:%d)\n", \
-                PAPI_strerror(ret__), __FILE__, __LINE__); \
+            const char * err = PAPI_strerror(ret__); \
+            std::printf("PAPI error: %s (%s:%d)\n", \
+                err, __FILE__, __LINE__); \
             std::exit(1); \
         } \
     } while (0)
@@ -126,10 +127,12 @@ private:
             int code;
             PAPI_CHECK(PAPI_event_name_to_code(&evname[0], &code));
 #else
-            int code = name2code[evname];
+            if (name2code.find(evname) != name2code.end()) {
+                int code = name2code[evname];
+                event_list.push_back(code);
+                event_str_list.push_back(evname);
+            }
 #endif
-            event_list.push_back(code);
-            event_str_list.push_back(evname);
         }
 
         auto new_size = std::min<int>(max_events, event_list.size());
@@ -190,9 +193,11 @@ public:
 
     void print_results()
     {
+        if (prof_entries_.size() == 0) return;
+
         std::printf("\n");
         std::printf("==== papi-hook results ====\n");
-        std::printf("%-20s %-10s   %7s %9s %9s %9s %9s\n",
+        std::printf("%-20s %-12s %7s %9s %9s %9s %9s\n",
             "func", "counter", "count", "total", "avg", "min", "max");
 
         for (auto& pair : prof_entries_) {
@@ -201,7 +206,7 @@ public:
 
             for (size_t i = 0; i < events_.size(); i++) {
                 std::printf(
-                    "%-20s %-10s %7zu %9lld %9lld %9lld %9lld\n",
+                    "%-20s %-12s %7zu %9lld %9lld %9lld %9lld\n",
                     name.c_str(), event_strs_[i].c_str(), e.count,
                     e.total[i], e.total[i] / e.count,
                     e.min[i], e.max[i]);
@@ -288,7 +293,7 @@ int main(int argc, char ** argv)
         usage(argv[0]);
 
     const char * target = nullptr;
-    const char * events = "TOT_CYC,TOT_INS";
+    const char * events = "TOT_CYC,TOT_INS,STL_CCY,L1_DCM,L2_DCM";
     for (;;) {
         int result = getopt(argc, argv, "f:e:v");
         if (result == -1) break;
