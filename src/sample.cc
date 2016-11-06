@@ -27,7 +27,9 @@ double calc(int count)
 
 int main(int argc, char ** argv)
 {
-    double r = calc(1000 * 1000);
+    double r = 0.0;
+    for (int i = 0; i < 5; i++)
+        r = calc(1000 * 1000);
 
     std::printf("result = %f\n", r);
 
