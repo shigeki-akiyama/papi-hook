@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <memory>
 #include <sstream>
+#include <limits>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -19,22 +20,51 @@
     do { \
         int ret__ = call; \
         if (ret__ != PAPI_OK) { \
-            fprintf(stderr, "PAPI error: %s (%s:%d)\n", \
-                    PAPI_strerror(ret__), __FILE__, __LINE__); \
-                std::exit(1); \
+            std::fprintf(stderr, "PAPI error: %s (%s:%d)\n", \
+                PAPI_strerror(ret__), __FILE__, __LINE__); \
+            std::exit(1); \
         } \
     } while (0)
 
-struct papihook {
+#define vputs(fmt, ...) \
+    do { \
+        if (g_verbose) \
+            std::printf("papi-hook" fmt, ##__VA_ARGS__); \
+    } while (0)
+
+static bool g_verbose = false;
+
+class papihook {
     enum : int {
-        max_target_len = 1024,
         max_events = 5,
     };
 
-    const char *target;
-    std::vector<int> events;
+    struct prof_entry {
+        std::string name;
+        size_t count;
+        long long total[max_events];
+        long long min[max_events];
+        long long max[max_events];
+
+        prof_entry() : name(), count(0)
+        {
+            for (int i = 0; i < max_events; i++) {
+                total[i] = 0;
+                min[i] = std::numeric_limits<long long>::max();
+                max[i] = std::numeric_limits<long long>::min();
+            }
+        }
+    };
+
+    const char *target_;
+    std::vector<int> events_;
+    std::vector<std::string> event_strs_;
+    std::unordered_map<std::string, prof_entry> prof_entries_;
+
+public:
     bool profiling;
 
+private:
     std::unordered_map<std::string, int> make_name2code()
     {
         std::unordered_map<std::string, int> map;
@@ -76,14 +106,16 @@ struct papihook {
         return map;
     }
 
-    std::vector<int> parse_event_list(const char * events_str)
+    std::pair<std::vector<int>, std::vector<std::string>>
+    parse_event_list(const char * events_str)
     {
         std::vector<int> event_list;
+        std::vector<std::string> event_str_list;
 
         auto name2code = make_name2code();
 
         if (events_str == nullptr)
-            return event_list;
+            return std::make_pair(event_list, event_str_list);
 
         std::string name;
         std::stringstream ss(events_str);
@@ -97,58 +129,85 @@ struct papihook {
             int code = name2code[evname];
 #endif
             event_list.push_back(code);
+            event_str_list.push_back(evname);
         }
 
         auto new_size = std::min<int>(max_events, event_list.size());
         event_list.resize(new_size);
+        event_str_list.resize(new_size);
 
-        return event_list;
+        return std::make_pair(event_list, event_str_list);
     }
 
-    bool preloaded()
-    {
-        return getenv("PHOOK_ENABLED") != nullptr;
-    }
-
+public:
     papihook()
     {
         if (!preloaded()) return;
 
-        //PAPI_CHECK(PAPI_library_init(PAPI_VER_CURRENT));
-  
-        /*
-        constexpr int es[] = {
-            PAPI_TOT_CYC, PAPI_TOT_INS, PAPI_LD_INS, PAPI_SR_INS,
-            PAPI_L1_LDM, PAPI_L1_STM, PAPI_L2_LDM, PAPI_L2_STM,
-            PAPI_L3_LDM, PAPI_L3_TCM, PAPI_TLB_DM, 
-        };
-        */
-
-        target = getenv("PHOOK_TARGET");
-        if (target == nullptr)
-            target = "";
+        target_ = getenv("PHOOK_TARGET");
+        if (target_ == nullptr)
+            target_ = "";
         
-        const char * events_str = getenv("PHOOK_EVENTS");
-        events = parse_event_list(events_str);
-#if 0
-        n_events = event_list.size();
-        for (int i = 0; i < n_events; i++) {
-            events[i] = event_list[i];
-        }
-#endif
-
+        auto events_str = getenv("PHOOK_EVENTS");
+        auto pair = parse_event_list(events_str);
+        events_ = pair.first;
+        event_strs_ = pair.second;
         profiling = false;
 
-        printf("papi-hook: initialized.\n");
+        vputs("papi-hook: initialized.\n");
     }
 
     ~papihook()
     {
         if (!preloaded()) return;
 
-        printf("papi-hook: finalized.\n");
+        print_results();
+
+        vputs("papi-hook: finalized.\n");
     }
 
+    bool verbose() { return true; }
+
+    bool preloaded() { return getenv("PHOOK_ENABLED") != nullptr; }
+
+    const char * target() { return target_; }
+
+    const std::vector<int>& events() { return events_; }
+
+    void submit(const char * name, long long values[], int n_values)
+    {
+        std::string sname = name;
+        auto& e = prof_entries_[sname];
+        e.name = sname;
+        e.count += 1;
+
+        for (int i = 0; i < n_values; i++) {
+            e.total[i] += values[i];
+            e.min[i] = std::min(e.min[i], values[i]);
+            e.max[i] = std::max(e.max[i], values[i]);
+        }
+    }
+
+    void print_results()
+    {
+        std::printf("\n");
+        std::printf("==== papi-hook results ====\n");
+        std::printf("%-20s %-10s   %7s %9s %9s %9s %9s\n",
+            "func", "counter", "count", "total", "avg", "min", "max");
+
+        for (auto& pair : prof_entries_) {
+            auto& name = pair.first;
+            auto& e = pair.second;
+
+            for (size_t i = 0; i < events_.size(); i++) {
+                std::printf(
+                    "%-20s %-10s %7zu %9lld %9lld %9lld %9lld\n",
+                    name.c_str(), event_strs_[i].c_str(), e.count,
+                    e.total[i], e.total[i] / e.count,
+                    e.min[i], e.max[i]);
+            }
+        }
+    }
 } papihook;
 
 
@@ -177,13 +236,14 @@ extern "C" void __cyg_profile_func_enter(void * faddr, void *)
     if (papihook.profiling) return;
 
     auto fname = addr2cxxname(faddr);
-    if (!fname) return;
+    if (fname == nullptr) return;
 
-    if (std::strcmp(fname, papihook.target) == 0) {
-        printf("papi-hook: hooked %s.\n", fname);
+    if (std::strcmp(fname, papihook.target()) == 0) {
+        vputs("papi-hook: hooked %s.\n", fname);
 
-        int n_events = papihook.events.size();
-        PAPI_CHECK(PAPI_start_counters(papihook.events.data(), n_events));
+        int n_events = papihook.events().size();
+        PAPI_CHECK(PAPI_start_counters(
+            const_cast<int *>(papihook.events().data()), n_events));
 
         papihook.profiling = true;
     }
@@ -191,26 +251,34 @@ extern "C" void __cyg_profile_func_enter(void * faddr, void *)
     std::free(static_cast<void *>(fname));
 }
 
-extern "C" void __cyg_profile_func_exit(void *, void *)
+extern "C" void __cyg_profile_func_exit(void * faddr, void *)
 {
     if (!papihook.profiling) return;
     papihook.profiling = false;
 
-    int n_events = papihook.events.size();
+    auto fname = addr2cxxname(faddr);
+    if (fname == nullptr) return;
+
+    int n_events = papihook.events().size();
 
     long long values[256];
     PAPI_CHECK(PAPI_stop_counters(values, n_events));
 
+    papihook.submit(fname, values, n_events);
+#if 0
     for (int i = 0; i < n_events; i++) {
         char name[PAPI_MAX_STR_LEN];
-        PAPI_CHECK(PAPI_event_code_to_name(papihook.events[i], name));
+        PAPI_CHECK(PAPI_event_code_to_name(papihook.events()[i], name));
         printf("%-16s : %10lld\n", name, values[i]);
     }
+#endif
 }
 
 static void usage(const char *path)
 {
-    std::printf("Usage: %s -f FUNCTION -e EVENT[,EVENT]... COMMAND [ARGS]...\n", path);
+    std::printf(
+        "Usage: %s -f FUNCTION -e EVENT[,EVENT]... COMMAND [ARGS]...\n",
+        path);
     std::exit(1);
 }
 
@@ -222,7 +290,7 @@ int main(int argc, char ** argv)
     const char * target = nullptr;
     const char * events = "TOT_CYC,TOT_INS";
     for (;;) {
-        int result = getopt(argc, argv, "f:e:");
+        int result = getopt(argc, argv, "f:e:v");
         if (result == -1) break;
 
         switch (result) {
@@ -231,6 +299,9 @@ int main(int argc, char ** argv)
             break;
         case 'e':
             events = optarg;
+            break;
+        case 'v':
+            g_verbose = true;
             break;
         case ':':
             usage(argv[0]);
@@ -241,8 +312,8 @@ int main(int argc, char ** argv)
         }
     }
 
-    printf("target = %s\n", target);
-    printf("events = %s\n", events);
+    vputs("target = %s\n", target);
+    vputs("events = %s\n", events);
 
     if (target == nullptr)
         usage(argv[0]);
@@ -257,7 +328,7 @@ int main(int argc, char ** argv)
 
     execv(argv[optind], &argv[optind]);
 
-    fprintf(stderr, "papi-hook: cannot access '%s': %s\n",
+    std::fprintf(stderr, "papi-hook: cannot access '%s': %s\n",
             argv[optind], strerror(errno));
     std::exit(1);
 }
